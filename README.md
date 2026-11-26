@@ -59,7 +59,8 @@ An LLM is the creative decision-maker; the retrieval engine is the performer.
 3. **Constrained decoding.** Small models are unreliable at free-form JSON, so the decoder feeds the JSON skeleton itself. Style and energy are picked only among valid options through a token trie, and free-text fields stop at their closing quote. The output is always valid. Story words nudge the option scores, for example "battle" toward Krump and "rain" toward Ballet Jazz, and a style the user names explicitly is enforced.
 4. **Performance.** Each phrase slot gets the plan's style and energy, and the stitcher picks real AIST++ moves that fit.
 5. **Refinement by chat.** "Make the ending calmer" rewrites only the sections the request is about, and phrases in untouched sections keep their exact moves.
-6. **Fallback.** If the model isn't loaded, a rule-based plan follows the music's energy, so the app never breaks.
+6. **Body constraints** (`server/constraints.py`). Phrases like "keep the left hand still", "arms crossed in the intro", "no big leg kicks" or "right arm raised at the drop" become rules: limb, mode (hold, keep small, raise, cross, down) and sections. They are applied to the SMPL joint rotations of that limb after stitching, with smooth ramps, while the rest of the body keeps dancing. The arm poses were solved with IK on the skeleton. Parsing is rule-based, so constraints work even when the LLM is unavailable, and a body-only request doesn't spend an LLM call.
+7. **Fallback.** If the model isn't loaded, a rule-based plan follows the music's energy, so the app never breaks.
 
 Other features include a per-phrase re-roll (↻), a built-in synthesized demo track, beat-reactive visuals (disco floor, beams, trails and bloom), BVH and JSON export, and video recording from the browser.
 

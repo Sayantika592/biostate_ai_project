@@ -14,6 +14,7 @@ import glob
 import json
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
@@ -114,10 +115,22 @@ def _plan_dance(job: dict, clip: Path, seconds: int, genre: str, prompt: str, pr
     import choreo_llm as L
     outline = C.song_outline(clip, seconds)
     sections = L.sections_from_outline(outline)
-    if prompt.strip() or previous:
+    import constraints as K
+    new_cons = K.parse(prompt, sections)
+    body_only = previous and (new_cons or K.clears(prompt)) and not L.mentioned_styles(prompt) and \
+        not re.search(r"calm|intense|energ|aggress|wild|soft|hard|faster|slower|style|bigger|graceful", prompt.lower())
+    if body_only:  # "keep the left hand still": same plan, new body rule, no LLM call needed
+        plan = {**previous, "parser": previous.get("parser", "rules"), "changed": [],
+                "reply": "Done: " + ("removed the body constraints." if K.clears(prompt) else "; ".join(c["label"] for c in new_cons) + ".")}
+    elif prompt.strip() or previous:
         plan = L.plan(sections, prompt, style_hint=genre, previous=previous)
     else:
         plan = L.rules_plan(sections, prompt, style_hint=genre if genre in C.GENRES else "auto")
+    if K.clears(prompt):
+        job["constraints"] = []
+    else:
+        job["constraints"] = K.merge(job.get("constraints", []) if previous else [], new_cons)
+    plan["constraints"] = job["constraints"]
     job["plan"] = plan
     job["plan_slots"] = L.slots_from_plan(plan, len(outline) + 2)
     return job["plan_slots"]
@@ -149,7 +162,8 @@ def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: 
                 slots = [{**x, "energy": energy} for x in slots]
                 job["plan_slots"] = slots
             job["status"] = "dancing it out"
-            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed, energy=energy, plan=slots)
+            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed, energy=energy, plan=slots,
+                                                    constraints=job.get("constraints"))
             _annotate(job, info)
             job.update({k: v for k, v in info.items() if k not in ("beats",)})
         elif MODE == "edge":
@@ -222,7 +236,8 @@ def reroll(job_id: str, r: Reroll):
         fixed = {j: pid for j, pid in enumerate(picks) if j != r.slot}
         sample, info = choreographer().generate(
             job_dir / "clip.wav", job["seconds"], genre=job["genre_code"], energy=job.get("energy", "match"),
-            seed=int.from_bytes(os.urandom(4), "little"), fixed=fixed, exclude={r.slot: banned}, plan=job.get("plan_slots"))
+            seed=int.from_bytes(os.urandom(4), "little"), fixed=fixed, exclude={r.slot: banned}, plan=job.get("plan_slots"),
+            constraints=job.get("constraints"))
         job["banned"][str(r.slot)] = sorted(banned)[-12:]
         _annotate(job, info)
         job.update({k: v for k, v in info.items() if k not in ("beats",)})
@@ -250,7 +265,7 @@ def refine(job_id: str, r: Refine):
                  if j < len(slots) and j < len(old_slots) and (slots[j]["style"], slots[j]["energy"]) == (old_slots[j]["style"], old_slots[j]["energy"])}
         sample, info = choreographer().generate(
             job_dir / "clip.wav", job["seconds"], genre=job["genre_code"], seed=int.from_bytes(os.urandom(4), "little"),
-            fixed=fixed, plan=slots)
+            fixed=fixed, plan=slots, constraints=job.get("constraints"))
         _annotate(job, info)
         job.update({k: v for k, v in info.items() if k not in ("beats",)})
         job["banned"] = {}

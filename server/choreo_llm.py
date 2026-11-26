@@ -306,12 +306,21 @@ def rules_plan(sections: list[dict], text: str, style_hint: str = "auto", previo
     mood = "calm" if re.search(r"\b(calm|chill|soft|slow|gentle|relaxed|smooth)\b", t) else \
         "intense" if re.search(r"\b(energetic|intense|hype|hard|wild|aggressive|explosive|crazy)\b", t) else None
     out = []
+    targets = _targets(sections, text) if previous else None
+    prev = {p["section"]: p for p in (previous or {}).get("sections", [])}
     for k, s in enumerate(sections):
+        if targets is not None and s["section"] not in targets and s["section"] in prev:
+            out.append({**s, **{x: prev[s["section"]][x] for x in ("style", "energy", "move", "why")}})
+            continue
         style = styles[min(k, len(styles) - 1)] if styles else base
         energy = mood or {"quiet": "calm", "medium": "match", "loud": "intense"}[s["music"]]
         out.append({**s, "style": style, "energy": energy,
                     "move": {"calm": "easy groove", "match": "on-beat groove", "intense": "big hits"}[energy],
                     "why": f"The music is {s['music']} here, so the dance {'holds back' if energy == 'calm' else 'goes big' if energy == 'intense' else 'rides the beat'}."})
+    if previous:
+        ch = [o for o in out if targets and o["section"] in targets]
+        return {"title": previous.get("title", "Your dance"), "sections": out, "parser": "rules", "changed": sorted(targets or []),
+                "reply": "Rewrote " + "; ".join(f"S{o['section']} as {GENRES[o['style']]}" for o in ch) + " (quick mode)."}
     return {"title": f"{GENRES[base]} to the music", "sections": out,
             "reply": f"Here's a {GENRES[base]} routine that follows the song's energy.", "parser": "rules"}
 

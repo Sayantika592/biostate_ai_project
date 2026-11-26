@@ -122,6 +122,10 @@
   #plan .why { font-size:12px; color:var(--muted); font-style:italic; }
   #plan .x { float:right; background:none; border:0; color:var(--muted); font-size:14px; cursor:pointer; }
   #planbtn { display:none; }
+  #pcons { display:flex; flex-wrap:wrap; gap:5px; margin:0 0 6px; }
+  #pcons:empty { display:none; }
+  #pcons span { font-size:11px; padding:2px 8px; border-radius:999px; color:#d9fbff; border:1px solid rgba(0,229,255,.5);
+                background:rgba(0,229,255,.1); box-shadow:0 0 10px rgba(0,229,255,.25); }
   .ph { border-top:3px solid var(--c, var(--line)); }
   .ph .mvs { font-size:11px; color:var(--gold); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #rec.on { border-color:#ff3b5c; color:#ff8fa3; box-shadow:0 0 14px rgba(255,59,92,.6); }
@@ -172,7 +176,7 @@
     <p>Upload any track (or drag it here) and tell the AI choreographer a vibe or a story. It reads the music, writes a plan section by section, and performs it with real dancers' moves from the AIST++ motion-capture set.</p>
     <div class="row"><label class="btn disco" for="file">Upload song</label><button id="sample2" class="ghost">✨ Try demo track</button></div>
   </div></div>
-  <div id="plan" class="hud"><button class="x" id="planx" title="Hide">✕</button><h3 id="ptitle"></h3><div class="by" id="pby"></div><div id="psecs"></div></div>
+  <div id="plan" class="hud"><button class="x" id="planx" title="Hide">✕</button><h3 id="ptitle"></h3><div class="by" id="pby"></div><div id="pcons" title="Body constraints from your words"></div><div id="psecs"></div></div>
   <div id="loader" class="hud"><div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i></div><div id="loadtext">Working…</div></div>
   <div id="bigplay" class="hud"><button class="disco" id="bigplaybtn">▶ Play the dance</button></div>
   <div id="tl" class="hud">
@@ -451,6 +455,7 @@ function renderPlan(plan, changed) {
     ? `Written by the AI choreographer (Qwen2.5 LLM${plan.device === "gpu" ? " on the Space's GPU" : ", on this server"}) in ${plan.seconds_taken}s`
     : (assistReady ? "Plan from the music's energy. Type a vibe or story below and the AI choreographer (LLM) will rewrite it."
                    : "Plan from the music's energy (AI choreographer LLM still loading, rule-based for now)");
+  $("pcons").innerHTML = (plan.constraints || []).map((c) => `<span>🔒 ${esc(c.label)}</span>`).join("");
   planEls = {};
   $("psecs").innerHTML = "";
   for (const s of plan.sections) {
@@ -600,6 +605,7 @@ async function refine(text) {
     const first = dance.timeline.find((p) => changed.includes(p.slot));
     audio.currentTime = first ? Math.max(0, first.t0 - 0.3) : t;
     $("reply").textContent = "💬 " + job.plan.reply;
+    status(`${job.genre} at ${job.tempo} BPM · ${job.seconds}s · ${dance.timeline.length} phrases. Keep refining, or tap ↻ on a phrase.`);
     $("ask").value = "";
     setBusy(false);
     playAudio();
@@ -611,7 +617,7 @@ async function refine(text) {
 function setChatMode() {
   const refineMode = !!(job && job.plan && dance);
   $("askgo").textContent = refineMode ? "Refine" : "Choreograph";
-  $("ask").placeholder = refineMode ? 'Refine it: "make the ending calmer", "krump at the drop", "more aggressive chorus"'
+  $("ask").placeholder = refineMode ? 'Refine it: "make the ending calmer", "krump at the drop", "keep the left hand still", "arms crossed in the intro"'
     : 'Tell the AI choreographer a vibe or a story: "a shy robot who goes wild at the drop"';
 }
 $("askgo").onclick = askAndDance;

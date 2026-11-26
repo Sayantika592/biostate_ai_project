@@ -167,7 +167,7 @@ class Choreographer:
 
     def generate(self, audio: str | Path, seconds: float | None = None, genre: str = "auto", seed: int = 0,
                  energy: str = "match", fixed: dict | None = None, exclude: dict | None = None,
-                 plan: list | None = None):
+                 plan: list | None = None, constraints: list | None = None):
         """fixed: {phrase slot: pid} keeps those picks; exclude: {slot: set(pid)} bans picks
         (used to re-roll one phrase of an existing dance). plan: per phrase slot
         {"style": code, "energy": calm|match|intense}, written by the AI choreographer."""
@@ -221,6 +221,16 @@ class Choreographer:
             recent = (recent + [pick["clip"]])[-3:]
 
         rot, root = self._assemble(chosen, beats, dur)
+        if constraints:  # body constraints ("left hand still in the intro"), per plan section
+            import constraints as K
+            ranges: dict[int, tuple[int, int]] = {}
+            for j in range(n_phr):
+                sec = (plan[min(j, len(plan) - 1)].get("section") if plan else None) or 0
+                f0 = int(max(0.0, beats[min(j * PHRASE, len(beats) - 1)]) * FPS)
+                f1 = int(max(0.0, beats[min((j + 1) * PHRASE, len(beats) - 1)]) * FPS)
+                a0, a1 = ranges.get(sec, (f0, f1))
+                ranges[sec] = (min(a0, f0), max(a1, f1))
+            rot = K.apply(rot, constraints, ranges, FPS)
         pos, _ = motion.forward_kinematics(rot, root, motion.REST_OFFSETS)
         sample = {"smpl_poses": rot.reshape(len(rot), 72), "smpl_trans": root, "full_pose": pos}
         T = len(rot) / FPS
