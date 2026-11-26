@@ -671,7 +671,7 @@ async function generate() {
   try {
     job = await getJSON("api/generate", { method: "POST", body: fd });
     while (job.status !== "done" && job.status !== "error") {
-      setBusy(true, job.status[0].toUpperCase() + job.status.slice(1) + "…" + (/plan/.test(job.status) ? " (about 15 s)" : ""));
+      setBusy(true, job.status[0].toUpperCase() + job.status.slice(1) + "…" + (/plan/.test(job.status) ? " (it may take some time)" : ""));
       await new Promise((r) => setTimeout(r, 1000));
       job = await getJSON(`api/jobs/${job.id}`);
     }
