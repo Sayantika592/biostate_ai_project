@@ -8,7 +8,7 @@ COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 # On-device LLM for the "describe your dance" box (llama.cpp, CPU). Optional:
 # if this step fails the app still works with its keyword parser.
-RUN CMAKE_ARGS="-DGGML_NATIVE=OFF" pip install --no-cache-dir llama-cpp-python==0.3.16 huggingface_hub \
+RUN CMAKE_ARGS="-DGGML_NATIVE=OFF" pip install --no-cache-dir llama-cpp-python==0.3.2 huggingface_hub \
  && python -c "from huggingface_hub import hf_hub_download; hf_hub_download('Qwen/Qwen2.5-0.5B-Instruct-GGUF', 'qwen2.5-0.5b-instruct-q4_k_m.gguf', local_dir='/app/models')" \
  || echo "LLM assistant not installed; using keyword parser"
 COPY . .

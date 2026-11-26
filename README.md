@@ -62,7 +62,7 @@ A small on-device LLM turns the typed request into dance settings. It uses Qwen2
 To enable it locally:
 
 ```bash
-pip install llama-cpp-python==0.3.16 huggingface_hub
+pip install llama-cpp-python==0.3.2 huggingface_hub
 python -c "from huggingface_hub import hf_hub_download; hf_hub_download('Qwen/Qwen2.5-0.5B-Instruct-GGUF','qwen2.5-0.5b-instruct-q4_k_m.gguf', local_dir='models')"
 ```
 

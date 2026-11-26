@@ -20,14 +20,19 @@ os.environ.setdefault("LLM_PATH", str(MODEL_DIR / MODEL_FILE))
 os.environ.setdefault("DATA_DIR", "/tmp/jobs")
 sys.path.insert(0, str(ROOT / "server"))
 
-try:  # ZeroGPU hardware expects at least one @spaces.GPU function; nothing here needs a GPU.
+# ZeroGPU hardware refuses to start unless at least one @spaces.GPU function is
+# registered at import time. Nothing here needs a GPU, so this one is never called.
+try:
     import spaces
 
-    @spaces.GPU
-    def _gpu_unused():
-        return None
-except Exception:
-    pass
+    @spaces.GPU(duration=10)
+    def gpu_healthcheck():
+        import torch
+        return torch.cuda.is_available()
+
+    print("ZeroGPU: registered @spaces.GPU function", flush=True)
+except Exception as e:  # not on ZeroGPU (local runs, Docker)
+    print(f"spaces not available ({e}); running without ZeroGPU", flush=True)
 
 
 def build_library():
@@ -56,7 +61,7 @@ def fetch_llm():
         except ImportError:
             subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--only-binary", ":all:",
                             "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
-                            "llama-cpp-python==0.3.16"], check=True, timeout=600)
+                            "llama-cpp-python==0.3.2"], check=True, timeout=600)
         if not (MODEL_DIR / MODEL_FILE).exists():
             from huggingface_hub import hf_hub_download
             hf_hub_download("Qwen/Qwen2.5-0.5B-Instruct-GGUF", MODEL_FILE, local_dir=str(MODEL_DIR))
