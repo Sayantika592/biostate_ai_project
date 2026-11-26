@@ -112,7 +112,7 @@ renderer.setAnimationLoop(() => {
 });
 
 const status = (s) => ($("status").textContent = s);
-fetch("/api/health").then((r) => r.json()).then((h) => {
+fetch("api/health").then((r) => r.json()).then((h) => {
   $("mode").textContent = { stitch: "Engine: AIST++ move stitching", edge: "Engine: EDGE", mock: "Engine: demo" }[h.mode];
   $("seconds").max = h.max_seconds;
   $("mode").textContent += h.assistant === "ready" ? " · Assistant: on-device LLM" : " · Assistant: quick mode";
@@ -130,7 +130,7 @@ async function askAndDance() {
   if (!$("file").files[0]) { $("reply").textContent = "Upload a song first, then tell me what you want."; return; }
   $("askgo").disabled = true; $("reply").textContent = "Thinking…";
   try {
-    const s = await (await fetch("/api/interpret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) })).json();
+    const s = await (await fetch("api/interpret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) })).json();
     $("genre").value = [...$("genre").options].some((o) => o.value === s.style) ? s.style : "auto";
     $("seconds").value = s.seconds; $("start").value = s.start; energy = s.energy;
     $("reply").textContent = s.reply + (s.parser === "llm" ? "" : " (quick mode)");
@@ -152,14 +152,14 @@ async function generate() {
   const fd = new FormData();
   fd.append("file", file); fd.append("start", $("start").value); fd.append("seconds", $("seconds").value); fd.append("genre", $("genre").value); fd.append("energy", energy);
   try {
-    let job = await (await fetch("/api/generate", { method: "POST", body: fd })).json();
+    let job = await (await fetch("api/generate", { method: "POST", body: fd })).json();
     while (job.status !== "done" && job.status !== "error") {
       status(job.status[0].toUpperCase() + job.status.slice(1) + "…");
       await new Promise((r) => setTimeout(r, 1500));
-      job = await (await fetch(`/api/jobs/${job.id}`)).json();
+      job = await (await fetch(`api/jobs/${job.id}`)).json();
     }
     if (job.status === "error") throw new Error(job.error);
-    const base = `/api/jobs/${job.id}`;
+    const base = `api/jobs/${job.id}`;
     dance = await (await fetch(`${base}/motion.json`)).json();
     buildSkeleton(dance.parents);
     audio.src = `${base}/clip.wav`;

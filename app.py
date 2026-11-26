@@ -70,13 +70,26 @@ def fetch_llm():
         print(f"LLM assistant unavailable, using quick mode: {e}", flush=True)
 
 
+def load_server_app():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("server_app", ROOT / "server" / "app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.app
+
+
 if __name__ == "__main__":
     build_library()
     threading.Thread(target=fetch_llm, daemon=True).start()
-    import uvicorn
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("server_app", ROOT / "server" / "app.py")
-    server_app = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(server_app)
-    fastapi_app = server_app.app
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
+    import gradio as gr
+
+    # ZeroGPU only starts a Space that launches through Gradio, so Gradio hosts the
+    # page: the app itself (FastAPI + three.js) is mounted at /ui and shown full-size.
+    with gr.Blocks(title="Song to Dance", css="footer{display:none!important} .gradio-container{max-width:100%!important;padding:0!important}") as demo:
+        gr.HTML('<iframe src="/ui/" title="Song to Dance" style="width:100%;height:92vh;border:0;border-radius:8px"></iframe>'
+                '<p style="font-size:13px;opacity:.7;margin:6px 0">Open full screen: <a href="/ui/" target="_blank">/ui/</a></p>')
+    demo.queue(default_concurrency_limit=4)
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)), prevent_thread_lock=True)
+    demo.app.mount("/ui", load_server_app())
+    print("Song to Dance ready at /ui/", flush=True)
+    demo.block_thread()
