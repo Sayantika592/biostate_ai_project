@@ -89,7 +89,11 @@ if __name__ == "__main__":
         gr.HTML('<iframe src="/ui/" title="Song to Dance" style="width:100%;height:92vh;border:0;border-radius:8px"></iframe>'
                 '<p style="font-size:13px;opacity:.7;margin:6px 0">Open full screen: <a href="/ui/" target="_blank">/ui/</a></p>')
     demo.queue(default_concurrency_limit=4)
-    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)), prevent_thread_lock=True)
-    demo.app.mount("/ui", load_server_app())
+    # ssr_mode=False: Spaces turn Gradio's server-side rendering on by default, and its
+    # proxy would answer /ui/ with the Gradio page itself (an endless iframe loop).
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)),
+                prevent_thread_lock=True, ssr_mode=False)
+    from starlette.routing import Mount
+    demo.app.router.routes.insert(0, Mount("/ui", app=load_server_app()))  # ahead of Gradio's routes
     print("Song to Dance ready at /ui/", flush=True)
     demo.block_thread()
