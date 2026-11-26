@@ -53,21 +53,16 @@ def build_library():
 
 
 def fetch_llm():
-    """Best effort: a prebuilt llama.cpp wheel plus the 0.5B model. Until it is ready
-    (or if it fails) the assistant runs in keyword 'quick mode'."""
+    """Download and load the AI choreographer's LLM (Qwen2.5-Instruct via transformers).
+    Until it is ready, or if it fails, plans come from the rule-based fallback."""
     try:
-        try:
-            import llama_cpp  # noqa: F401
-        except ImportError:
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--only-binary", ":all:",
-                            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
-                            "llama-cpp-python==0.3.2"], check=True, timeout=600)
-        if not (MODEL_DIR / MODEL_FILE).exists():
-            from huggingface_hub import hf_hub_download
-            hf_hub_download("Qwen/Qwen2.5-0.5B-Instruct-GGUF", MODEL_FILE, local_dir=str(MODEL_DIR))
-        print("On-device LLM ready", flush=True)
+        sys.path.insert(0, str(ROOT / "server"))
+        import choreo_llm
+        choreo_llm.download()
+        choreo_llm.load()
+        print(f"AI choreographer LLM: {choreo_llm.status()}", flush=True)
     except Exception as e:
-        print(f"LLM assistant unavailable, using quick mode: {e}", flush=True)
+        print(f"AI choreographer LLM unavailable, using rules: {e}", flush=True)
 
 
 def load_server_app():

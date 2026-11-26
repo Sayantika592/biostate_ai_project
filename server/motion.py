@@ -88,7 +88,7 @@ def to_viewer_json(sample: dict) -> dict:
         "fps": FPS,
         "names": JOINT_NAMES,
         "parents": PARENTS,
-        "frames": np.round(n["positions"], 4).tolist(),
+        "frames": np.round(n["positions"], 3).tolist(),
     }
 
 

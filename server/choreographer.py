@@ -49,13 +49,58 @@ class Library:
         return self.rot[a:b], self.trans[a:b], self.speed[a:b]
 
 
+_song_cache: dict = {}
+
+
 def analyse_song(path: str | Path, seconds: float | None = None):
+    p = Path(path)
+    key = (str(p), seconds, p.stat().st_mtime if p.exists() else 0)
+    if key not in _song_cache:
+        if len(_song_cache) > 32:
+            _song_cache.clear()
+        _song_cache[key] = _analyse_song(path, seconds)
+    return _song_cache[key]
+
+
+def song_outline(path: str | Path, seconds: float | None = None) -> list[dict]:
+    """Per 8-beat phrase of the song: time span and music energy (0-1 percentile and a word)."""
+    song = analyse_song(path, seconds)
+    dur = song["duration"]
+    beats = _extend_beats(song["beats"], dur, song["tempo"])
+    n_phr = int(np.ceil((len(beats) - 1) / PHRASE))
+    e_beat = np.interp(beats, song["beats"], song["energy"]) if len(song["beats"]) else np.zeros(len(beats))
+    e_phr = np.array([e_beat[j * PHRASE:(j + 1) * PHRASE].mean() for j in range(n_phr)])
+    rel = (e_phr - e_phr.min()) / (np.ptp(e_phr) + 1e-8)
+    out = []
+    for j in range(n_phr):
+        t0 = max(0.0, float(beats[min(j * PHRASE, len(beats) - 1)]))
+        t1 = min(dur, float(beats[min((j + 1) * PHRASE, len(beats) - 1)]))
+        if t0 >= dur:
+            break
+        out.append({"slot": j, "t0": round(t0, 2), "t1": round(t1, 2), "level": round(float(rel[j]), 2),
+                    "music": "quiet" if rel[j] < 0.34 else "loud" if rel[j] > 0.66 else "medium",
+                    "usable": t1 - t0 >= 0.25})
+    return out
+
+
+def _analyse_song(path: str | Path, seconds: float | None = None):
     y, sr = librosa.load(str(path), sr=22050, mono=True, duration=seconds)
     hop = 512
     onset = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
     tempo, beats = librosa.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=hop, units="time")
     tempo = float(np.atleast_1d(tempo)[0])
     beats = np.asarray(beats, dtype=np.float64)
+    # The tracker sometimes locks onto off-beats (busy hi-hats). The kick drum lives
+    # below ~150 Hz, so keep whichever grid, as tracked or shifted half a beat, lands
+    # on more low-frequency onsets.
+    if len(beats) > 4:
+        low = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=150, n_mels=16)
+        lt = librosa.frames_to_time(np.arange(len(low)), sr=sr, hop_length=hop)
+        half = float(np.median(np.diff(beats))) / 2
+        shifted = beats + half
+        shifted = shifted[shifted < len(y) / sr]
+        if np.interp(shifted, lt, low).mean() > 1.15 * np.interp(beats, lt, low).mean():
+            beats = shifted
     # Bring the beat grid into the 75-140 BPM range the dancers used.
     if tempo > 140:
         beats, tempo = beats[::2], tempo / 2
@@ -108,7 +153,7 @@ class Choreographer:
                     break
                 if start - 2 >= 0:
                     s, e = int(round(start)), int(round(end))
-                    out.append(dict(clip=i, start=start, period=period, genre=str(lib.genres[i]),
+                    out.append(dict(pid=len(out), clip=i, start=start, period=period, genre=str(lib.genres[i]),
                                     bpm=float(lib.bpm[i]), energy=float(speed[s:e].mean()),
                                     f_in=_pose_feat(rot[s]), f_out=_pose_feat(rot[e])))
                 k += 4  # bar-aligned starts
@@ -121,7 +166,12 @@ class Choreographer:
         return out
 
     def generate(self, audio: str | Path, seconds: float | None = None, genre: str = "auto", seed: int = 0,
-                 energy: str = "match"):
+                 energy: str = "match", fixed: dict | None = None, exclude: dict | None = None,
+                 plan: list | None = None):
+        """fixed: {phrase slot: pid} keeps those picks; exclude: {slot: set(pid)} bans picks
+        (used to re-roll one phrase of an existing dance). plan: per phrase slot
+        {"style": code, "energy": calm|match|intense}, written by the AI choreographer."""
+        fixed, exclude = fixed or {}, exclude or {}
         rng = np.random.default_rng(seed)
         song = analyse_song(audio, seconds)
         dur = song["duration"]
@@ -130,28 +180,38 @@ class Choreographer:
 
         if genre == "auto" or genre not in GENRES:
             genre = str(rng.choice(sorted(GENRES)))
-        pool = [p for p in self.phrases if p["genre"] == genre]
+        plan = list(plan or [])
+        slot_style = [plan[min(j, len(plan) - 1)].get("style", genre) if plan else genre for j in range(n_phr)]
+        slot_style = [g if g in GENRES else genre for g in slot_style]
+        slot_energy = [plan[min(j, len(plan) - 1)].get("energy", energy) if plan else energy for j in range(n_phr)]
+        pools = {g: [p for p in self.phrases if p["genre"] == g] for g in set(slot_style)}
         # Song energy per phrase, as a percentile across the song.
         e_beat = np.interp(beats, song["beats"], song["energy"]) if len(song["beats"]) else np.zeros(len(beats))
         e_phr = np.array([e_beat[j * PHRASE:(j + 1) * PHRASE].mean() for j in range(n_phr)])
         e_pct = np.argsort(np.argsort(e_phr)) / max(n_phr - 1, 1)
         # Energy preference shifts which moves count as a fit: calm favours the
         # gentler half of the library, intense the bigger half.
-        if energy == "calm":
-            e_pct = 0.45 * e_pct
-        elif energy == "intense":
-            e_pct = 0.55 + 0.45 * e_pct
+        e_pct = np.array([0.45 * e if en == "calm" else 0.55 + 0.45 * e if en == "intense" else e
+                          for e, en in zip(e_pct, slot_energy)])
 
         chosen, recent = [], []
         for j in range(n_phr):
+            if j in fixed:
+                pick = self.phrases[fixed[j]]
+                chosen.append(pick)
+                recent = (recent + [pick["clip"]])[-3:]
+                continue
             b0 = beats[min(j * PHRASE, len(beats) - 1)]
             b1 = beats[min((j + 1) * PHRASE, len(beats) - 1)]
             song_bpm = 60.0 * PHRASE / max(b1 - b0, 1e-3)
+            pool = pools[slot_style[j]]
             cost = np.array([
                 (0 if not chosen else np.linalg.norm(chosen[-1]["f_out"] - p["f_in"]) / 3.0)
                 + 1.5 * abs(p["energy_pct"] - e_pct[j])
                 + 2.0 * abs(np.log(song_bpm / p["bpm"]))
                 + (1.5 if p["clip"] in recent else 0.0)
+                + (1e6 if p["pid"] in exclude.get(j, ()) else 0.0)
+                + (0.8 if j + 1 in fixed and np.linalg.norm(p["f_out"] - self.phrases[fixed[j + 1]]["f_in"]) > 6 else 0.0)
                 for p in pool
             ])
             top = np.argsort(cost)[:8]
@@ -163,8 +223,23 @@ class Choreographer:
         rot, root = self._assemble(chosen, beats, dur)
         pos, _ = motion.forward_kinematics(rot, root, motion.REST_OFFSETS)
         sample = {"smpl_poses": rot.reshape(len(rot), 72), "smpl_trans": root, "full_pose": pos}
-        info = {"genre": GENRES[genre], "tempo": round(song["tempo"], 1), "energy": energy,
-                "phrases": [str(self.lib.names[p["clip"]]) for p in chosen]}
+        T = len(rot) / FPS
+        timeline = []
+        for j, p in enumerate(chosen):
+            t0 = max(0.0, float(beats[min(j * PHRASE, len(beats) - 1)]))
+            t1 = T if j == len(chosen) - 1 else min(T, float(beats[min((j + 1) * PHRASE, len(beats) - 1)]))
+            if t0 >= T:
+                break
+            if t1 - t0 < 0.25:  # pre-roll phrase that ends before the song starts
+                continue
+            timeline.append({"slot": j, "pid": p["pid"], "t0": round(max(0.0, t0), 3), "t1": round(min(T, t1), 3),
+                             "source": str(self.lib.names[p["clip"]]), "style": GENRES[p["genre"]],
+                             "energy": round(float(p["energy_pct"]), 2)})
+        song_beats = [round(float(b), 3) for b in song["beats"] if 0 <= b <= T]
+        used = list(dict.fromkeys(slot_style[t["slot"]] for t in timeline)) or [genre]
+        info = {"genre": " + ".join(GENRES[g] for g in used), "genre_code": used[0] if len(used) == 1 else genre, "tempo": round(song["tempo"], 1), "energy": energy,
+                "phrases": [str(self.lib.names[p["clip"]]) for p in chosen], "picks": [p["pid"] for p in chosen],
+                "timeline": timeline, "beats": song_beats}
         return sample, info
 
     def _segment(self, p, song_knots: np.ndarray, t_out: np.ndarray):

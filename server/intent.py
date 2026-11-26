@@ -137,7 +137,7 @@ def _reply_for(s: dict) -> str:
 def interpret(text: str) -> dict:
     """Return settings plus a reply, and which engine produced them."""
     rules = parse_rules(text)
-    llm = _load_llm()
+    llm = None  # settings only now; the AI choreographer (choreo_llm.py) writes the plan
     if llm is not None:
         try:
             with _llm_lock:

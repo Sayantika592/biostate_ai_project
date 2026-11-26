@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -47,7 +48,9 @@ def choreographer():
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Choreography API")
+app.add_middleware(GZipMiddleware, minimum_size=2048)  # motion JSON shrinks ~4x
 jobs: dict[str, dict] = {}
+job_locks: dict[str, threading.Lock] = {}
 gpu_lock = threading.Lock()  # one EDGE run at a time per GPU
 
 
@@ -57,6 +60,22 @@ def _ffmpeg_clip(src: Path, dst: Path, start: float, seconds: float):
          "-i", str(src), "-ac", "1", "-ar", "44100", str(dst)],
         check=True,
     )
+    # Compressed copy for the browser: ~5x smaller than the WAV, so playback never stalls.
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(dst), "-b:a", "128k", str(dst.with_suffix(".mp3"))],
+        check=True,
+    )
+
+
+def _write_outputs(job_dir: Path, sample: dict, info: dict | None = None):
+    view = motion.to_viewer_json(sample)
+    if info:
+        view["beats"] = info.get("beats", [])
+        view["timeline"] = info.get("timeline", [])
+    (job_dir / "motion.json").write_text(json.dumps(view, separators=(",", ":")))
+    (job_dir / "motion.bvh").write_text(motion.to_bvh(sample))
+    with open(job_dir / "motion.pkl", "wb") as f:
+        pickle.dump(sample, f)
 
 
 def _run_edge(job_dir: Path, clip: Path, seconds: int) -> dict:
@@ -89,25 +108,57 @@ def _run_edge(job_dir: Path, clip: Path, seconds: int) -> dict:
         return pickle.load(f)
 
 
-def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: int, energy: str):
+def _plan_dance(job: dict, clip: Path, seconds: int, genre: str, prompt: str, previous: dict | None = None):
+    """The AI choreographer writes (or rewrites) the plan; returns per-slot {style, energy}."""
+    import choreographer as C
+    import choreo_llm as L
+    outline = C.song_outline(clip, seconds)
+    sections = L.sections_from_outline(outline)
+    if prompt.strip() or previous:
+        plan = L.plan(sections, prompt, style_hint=genre, previous=previous)
+    else:
+        plan = L.rules_plan(sections, prompt, style_hint=genre if genre in C.GENRES else "auto")
+    job["plan"] = plan
+    job["plan_slots"] = L.slots_from_plan(plan, len(outline) + 2)
+    return job["plan_slots"]
+
+
+def _annotate(job: dict, info: dict):
+    """Attach the plan's section, move idea and reason to each timeline card."""
+    secs = {s["section"]: s for s in job.get("plan", {}).get("sections", [])}
+    slots = job.get("plan_slots") or []
+    for t in info.get("timeline", []):
+        ps = slots[t["slot"]] if t["slot"] < len(slots) else None
+        sec = secs.get(ps["section"]) if ps else None
+        if sec:
+            t.update(section=sec["section"], move=sec["move"], plan_energy=sec["energy"])
+
+
+def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: int, energy: str, prompt: str = ""):
     job = jobs[job_id]
     job_dir = DATA_DIR / job_id
     try:
         clip = job_dir / "clip.wav"
         job["status"] = "preparing audio"
         _ffmpeg_clip(src, clip, start, seconds)
-        job["status"] = "generating dance"
+        info = None
         if MODE == "stitch":
-            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed, energy=energy)
-            job.update(info)
+            job["status"] = "AI choreographer is writing your plan" if prompt.strip() else "reading the music"
+            slots = _plan_dance(job, clip, seconds, genre, prompt)
+            if energy != "match" and not prompt.strip():
+                slots = [{**x, "energy": energy} for x in slots]
+                job["plan_slots"] = slots
+            job["status"] = "dancing it out"
+            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed, energy=energy, plan=slots)
+            _annotate(job, info)
+            job.update({k: v for k, v in info.items() if k not in ("beats",)})
         elif MODE == "edge":
+            job["status"] = "generating dance"
             sample = _run_edge(job_dir, clip, seconds)
         else:
             sample = motion.mock_sample(seconds, seed=int(uuid.UUID(job_id)) % 2**32)
-        (job_dir / "motion.json").write_text(json.dumps(motion.to_viewer_json(sample)))
-        (job_dir / "motion.bvh").write_text(motion.to_bvh(sample))
-        with open(job_dir / "motion.pkl", "wb") as f:
-            pickle.dump(sample, f)
+        _write_outputs(job_dir, sample, info)
+        job["version"] = job.get("version", 0) + 1
         job["status"] = "done"
     except Exception as e:  # surfaced to the client
         job["status"] = "error"
@@ -117,14 +168,15 @@ def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: 
 @app.get("/api/health")
 def health():
     import choreographer as C
-    import intent
+    import choreo_llm
     return {"mode": MODE, "max_seconds": MAX_SECONDS, "genres": C.GENRES if MODE == "stitch" else {},
-            "assistant": intent.llm_status()}
+            "assistant": choreo_llm.status(), "llm": choreo_llm.LLM_REPO}
 
 
 @app.post("/api/generate")
 async def generate(file: UploadFile = File(...), start: float = Form(0.0), seconds: int = Form(30),
-                   genre: str = Form("auto"), seed: int | None = Form(None), energy: str = Form("match")):
+                   genre: str = Form("auto"), seed: int | None = Form(None), energy: str = Form("match"),
+                   prompt: str = Form("")):
     # EDGE's window maths needs a multiple of 5 s, at least 5 s.
     seconds = max(5, min(MAX_SECONDS, int(round(seconds / 5)) * 5))
     seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
@@ -135,7 +187,7 @@ async def generate(file: UploadFile = File(...), start: float = Form(0.0), secon
     with open(src, "wb") as f:
         shutil.copyfileobj(file.file, f)
     jobs[job_id] = {"id": job_id, "status": "queued", "seconds": seconds, "start": max(0.0, start)}
-    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds, genre, seed, energy if energy in ("calm", "match", "intense") else "match"), daemon=True).start()
+    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds, genre, seed, energy if energy in ("calm", "match", "intense") else "match", prompt[:500]), daemon=True).start()
     return jobs[job_id]
 
 
@@ -150,6 +202,76 @@ def interpret(p: Prompt):
     return intent.interpret(p.text)
 
 
+class Reroll(BaseModel):
+    slot: int
+
+
+@app.post("/api/jobs/{job_id}/reroll")
+def reroll(job_id: str, r: Reroll):
+    """Swap one 8-beat phrase for a different move, keeping every other phrase."""
+    job = jobs.get(job_id)
+    if not job or job.get("status") != "done" or "picks" not in job:
+        raise HTTPException(409, "dance not ready")
+    picks = job["picks"]
+    if not 0 <= r.slot < len(picks):
+        raise HTTPException(400, "no such phrase")
+    lock = job_locks.setdefault(job_id, threading.Lock())
+    with lock:
+        job_dir = DATA_DIR / job_id
+        banned = set(job.setdefault("banned", {}).get(str(r.slot), [])) | {picks[r.slot]}
+        fixed = {j: pid for j, pid in enumerate(picks) if j != r.slot}
+        sample, info = choreographer().generate(
+            job_dir / "clip.wav", job["seconds"], genre=job["genre_code"], energy=job.get("energy", "match"),
+            seed=int.from_bytes(os.urandom(4), "little"), fixed=fixed, exclude={r.slot: banned}, plan=job.get("plan_slots"))
+        job["banned"][str(r.slot)] = sorted(banned)[-12:]
+        _annotate(job, info)
+        job.update({k: v for k, v in info.items() if k not in ("beats",)})
+        _write_outputs(job_dir, sample, info)
+        job["version"] = job.get("version", 0) + 1
+    return job
+
+
+class Refine(BaseModel):
+    text: str
+
+
+@app.post("/api/jobs/{job_id}/refine")
+def refine(job_id: str, r: Refine):
+    """Chat with the choreographer: rewrite the plan in words, keep the phrases it didn't touch."""
+    job = jobs.get(job_id)
+    if not job or job.get("status") != "done" or "plan" not in job:
+        raise HTTPException(409, "dance not ready")
+    lock = job_locks.setdefault(job_id, threading.Lock())
+    with lock:
+        job_dir = DATA_DIR / job_id
+        old_slots, picks = job["plan_slots"], job["picks"]
+        slots = _plan_dance(job, job_dir / "clip.wav", job["seconds"], job["genre_code"], r.text[:500], previous=job["plan"])
+        fixed = {j: pid for j, pid in enumerate(picks)
+                 if j < len(slots) and j < len(old_slots) and (slots[j]["style"], slots[j]["energy"]) == (old_slots[j]["style"], old_slots[j]["energy"])}
+        sample, info = choreographer().generate(
+            job_dir / "clip.wav", job["seconds"], genre=job["genre_code"], seed=int.from_bytes(os.urandom(4), "little"),
+            fixed=fixed, plan=slots)
+        _annotate(job, info)
+        job.update({k: v for k, v in info.items() if k not in ("beats",)})
+        job["banned"] = {}
+        _write_outputs(job_dir, sample, info)
+        job["version"] = job.get("version", 0) + 1
+        job["changed_slots"] = [j for j in range(len(picks)) if j not in fixed]
+    return job
+
+
+_sample_lock = threading.Lock()
+
+
+@app.get("/api/sample.mp3")
+def sample_song():
+    """Built-in demo track, synthesised on first request."""
+    import sample_track
+    with _sample_lock:
+        path = sample_track.ensure(DATA_DIR / "sample" / "sample.mp3")
+    return FileResponse(path, media_type="audio/mpeg", filename="song-to-dance-demo.mp3")
+
+
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
     if job_id not in jobs:
@@ -157,7 +279,8 @@ def job_status(job_id: str):
     return jobs[job_id]
 
 
-FILES = {"motion.json": "application/json", "motion.bvh": "text/plain", "clip.wav": "audio/wav", "motion.pkl": "application/octet-stream"}
+FILES = {"motion.json": "application/json", "motion.bvh": "text/plain", "clip.wav": "audio/wav",
+         "clip.mp3": "audio/mpeg", "motion.pkl": "application/octet-stream"}
 
 
 @app.get("/api/jobs/{job_id}/{name}")
@@ -167,7 +290,8 @@ def job_file(job_id: str, name: str):
     path = DATA_DIR / job_id / name
     if not path.exists():
         raise HTTPException(409, "not ready")
-    return FileResponse(path, media_type=FILES[name], filename=f"dance-{job_id[:8]}{Path(name).suffix}")
+    headers = {"Cache-Control": "no-store"}
+    return FileResponse(path, media_type=FILES[name], filename=f"dance-{job_id[:8]}{Path(name).suffix}", headers=headers)
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

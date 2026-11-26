@@ -50,21 +50,20 @@ This is music-driven motion retrieval and synthesis, a lightweight version of mo
 
 On a synthetic 112 BPM test track, the AIST++-style beat-alignment score (music beats against motion hits, sigma 0.1 s) is 0.65 to 0.8 for House, Break, Krump and LA Hip-hop. It is about 0.45 for Pop and Street Jazz, whose hits aren't always speed minima. An unaligned raw clip scores 0.53. Generating a 30 s dance takes a few seconds on CPU.
 
-### The "describe your dance" assistant (`server/intent.py`)
+### The AI choreographer (`server/choreo_llm.py`)
 
-A small on-device LLM turns the typed request into dance settings. It uses Qwen2.5-0.5B-Instruct, a quantised GGUF of about 400 MB, run through llama.cpp on CPU.
+An LLM is the creative decision-maker; the retrieval engine is the performer.
 
-- **Function calling.** The model's only job is to call `set_dance(style, seconds, start, energy, reply)`. A JSON-schema grammar constrains its output to that function's arguments, so even a 0.5B model can't return malformed or out-of-range values.
-- **Guardrails.** A keyword parser runs alongside the model. Anything the user stated explicitly, such as "krump" or "1:10", wins over the model's guess. Values are clamped to valid ranges.
-- **Fallback.** If the model or `llama-cpp-python` isn't installed, or the call fails, the keyword parser answers on its own ("quick mode"), so the app never breaks.
-- **Energy.** "calm" and "intense" shift which half of the move library the phrase selector prefers.
+1. **Song structure.** The song's 8-beat phrases are grouped into 2 to 4 sections by music energy (quiet, medium, loud), for example intro, peak and ending.
+2. **Plan.** Given those sections and the user's vibe or story ("a shy robot who goes wild at the drop"), Qwen2.5-0.5B-Instruct (Hugging Face transformers, CPU) writes a plan. Each section gets a style, an energy (calm, steady or intense), a move idea and a one-line reason. The plan shows in the side panel and on the timeline.
+3. **Constrained decoding.** Small models are unreliable at free-form JSON, so the decoder feeds the JSON skeleton itself. Style and energy are picked only among valid options through a token trie, and free-text fields stop at their closing quote. The output is always valid. Story words nudge the option scores, for example "battle" toward Krump and "rain" toward Ballet Jazz, and a style the user names explicitly is enforced.
+4. **Performance.** Each phrase slot gets the plan's style and energy, and the stitcher picks real AIST++ moves that fit.
+5. **Refinement by chat.** "Make the ending calmer" rewrites only the sections the request is about, and phrases in untouched sections keep their exact moves.
+6. **Fallback.** If the model isn't loaded, a rule-based plan follows the music's energy, so the app never breaks.
 
-To enable it locally:
+Other features include a per-phrase re-roll (↻), a built-in synthesized demo track, beat-reactive visuals (disco floor, beams, trails and bloom), BVH and JSON export, and video recording from the browser.
 
-```bash
-pip install llama-cpp-python==0.3.2 huggingface_hub
-python -c "from huggingface_hub import hf_hub_download; hf_hub_download('Qwen/Qwen2.5-0.5B-Instruct-GGUF','qwen2.5-0.5b-instruct-q4_k_m.gguf', local_dir='models')"
-```
+To run the LLM locally: `pip install torch transformers`. The model (about 1 GB) downloads on first boot of `app.py`, or you can use `python -c "import sys; sys.path.insert(0,'server'); import choreo_llm; choreo_llm.download()"`.
 
 Other engines (`MODE` env var):
 - `edge`: pretrained [EDGE](https://github.com/Stanford-TML/EDGE) diffusion model conditioned on Jukebox features, built with `Dockerfile.edge`. It needs a GPU with about 24 GB and is untested.
@@ -73,7 +72,9 @@ Other engines (`MODE` env var):
 ## Files
 
 - `server/choreographer.py`: the beat analysis, phrase selection and stitching.
-- `server/intent.py`: the on-device LLM assistant, with function calling and the keyword fallback.
+- `server/choreo_llm.py`: the AI choreographer (LLM plan with constrained decoding, refinement, rule fallback).
+- `server/intent.py`: reads length and start time from typed requests.
+- `server/sample_track.py`: the synthesized demo track.
 - `server/build_library.py`: builds the move library. `server/aist_io.py` reads the AIST++ pickles with a numpy-only unpickler.
 - `server/motion.py`: forward kinematics on an SMPL-like skeleton, y-up normalisation, and BVH/JSON export.
 - `server/app.py`: the FastAPI job API and static web app.
@@ -86,7 +87,7 @@ The motion comes from AIST++, so check its license terms before any commercial u
 ## Roadmap
 
 1. Skinned avatar (a rigged glTF character retargeted from the SMPL joints) in place of the skeleton.
-2. Multi-turn edits in the assistant ("more arms in the second half").
+2. A larger LLM on GPU (ZeroGPU) for richer plans; per-phrase move descriptions matched with text embeddings.
 3. Learned music-to-move matching (e.g. a small contrastive model on AIST++ music and motion) to replace the energy and tempo heuristics.
 4. Practice mode: compare the user's webcam pose (MediaPipe) with the dance and score it.
 5. EDGE on a free Kaggle or Colab GPU as a second engine.
