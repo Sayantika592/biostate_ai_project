@@ -3,8 +3,10 @@ title: Song to Dance
 emoji: 💃
 colorFrom: red
 colorTo: indigo
-sdk: docker
-app_port: 7860
+sdk: gradio
+sdk_version: 5.9.1
+python_version: "3.10"
+app_file: app.py
 pinned: false
 short_description: Upload a song and get a 3D dance choreographed to it
 ---
@@ -27,7 +29,9 @@ Or with Docker: `docker build -t song-to-dance . && docker run -p 7860:7860 song
 
 ## Deploy (Hugging Face Space)
 
-`.github/workflows/deploy-space.yml` pushes `main` to a free Docker Space. Add a `HF_TOKEN` secret (write token) and a `HF_SPACE` variable (e.g. `your-name/song-to-dance`) under the GitHub repo's Settings > Secrets and variables > Actions, then re-run the workflow.
+The Space uses the free Gradio SDK (ZeroGPU hardware, though nothing here needs the GPU). `app.py` at the repo root builds the move library on first boot (about a minute), fetches the optional on-device LLM in the background, and serves the app on port 7860. `packages.txt` installs ffmpeg.
+
+`.github/workflows/deploy-space.yml` pushes `main` to the Space. Add a `HF_TOKEN` secret (write token) and a `HF_SPACE` variable (e.g. `your-name/song-to-dance`) under the GitHub repo's Settings > Secrets and variables > Actions, then re-run the workflow.
 
 ## How it works (default engine: `stitch`)
 

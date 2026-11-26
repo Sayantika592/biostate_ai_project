@@ -1,0 +1,77 @@
+"""Hugging Face Space entry point (Gradio SDK).
+
+The Space runs `python app.py`. This prepares the dance library on first boot,
+starts fetching the optional on-device LLM in the background, and serves the
+FastAPI app (API + three.js page) on port 7860.
+"""
+import os
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+LIBRARY = ROOT / "data" / "library.npz"
+MODEL_DIR = ROOT / "models"
+MODEL_FILE = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+os.environ.setdefault("LIBRARY", str(LIBRARY))
+os.environ.setdefault("LLM_PATH", str(MODEL_DIR / MODEL_FILE))
+os.environ.setdefault("DATA_DIR", "/tmp/jobs")
+sys.path.insert(0, str(ROOT / "server"))
+
+try:  # ZeroGPU hardware expects at least one @spaces.GPU function; nothing here needs a GPU.
+    import spaces
+
+    @spaces.GPU
+    def _gpu_unused():
+        return None
+except Exception:
+    pass
+
+
+def build_library():
+    if LIBRARY.exists():
+        return
+    import urllib.request
+    import zipfile
+    data = ROOT / "data"
+    data.mkdir(exist_ok=True)
+    zpath = data / "motions.zip"
+    print("Downloading AIST++ motions...", flush=True)
+    urllib.request.urlretrieve(
+        "https://github.com/google/aistplusplus_dataset/releases/download/v1.0/motions.zip", zpath)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(data, members=[m for m in z.namelist() if not m.startswith("__MACOSX")])
+    import build_library as B
+    B.main(str(data / "motions"), str(LIBRARY))
+
+
+def fetch_llm():
+    """Best effort: a prebuilt llama.cpp wheel plus the 0.5B model. Until it is ready
+    (or if it fails) the assistant runs in keyword 'quick mode'."""
+    try:
+        try:
+            import llama_cpp  # noqa: F401
+        except ImportError:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--only-binary", ":all:",
+                            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
+                            "llama-cpp-python==0.3.16"], check=True, timeout=600)
+        if not (MODEL_DIR / MODEL_FILE).exists():
+            from huggingface_hub import hf_hub_download
+            hf_hub_download("Qwen/Qwen2.5-0.5B-Instruct-GGUF", MODEL_FILE, local_dir=str(MODEL_DIR))
+        print("On-device LLM ready", flush=True)
+    except Exception as e:
+        print(f"LLM assistant unavailable, using quick mode: {e}", flush=True)
+
+
+if __name__ == "__main__":
+    build_library()
+    threading.Thread(target=fetch_llm, daemon=True).start()
+    import uvicorn
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("server_app", ROOT / "server" / "app.py")
+    server_app = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(server_app)
+    fastapi_app = server_app.app
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))

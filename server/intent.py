@@ -59,12 +59,16 @@ _llm_error: str | None = None
 
 def _load_llm():
     global _llm, _llm_error
-    if _llm is not None or _llm_error is not None:
+    if _llm is not None:
         return _llm
+    if not MODEL_PATH.exists():
+        # Not downloaded (yet): check again next time, the Space fetches it in the background.
+        _llm_error = f"no model at {MODEL_PATH}"
+        return None
+    if _llm_error is not None and not _llm_error.startswith("no model"):
+        return None
     try:
         from llama_cpp import Llama
-        if not MODEL_PATH.exists():
-            raise FileNotFoundError(f"no model at {MODEL_PATH}")
         _llm = Llama(model_path=str(MODEL_PATH), n_ctx=2048, n_threads=max(1, os.cpu_count() or 1), verbose=False)
     except Exception as e:  # missing package or weights: rules only
         _llm_error = str(e)
