@@ -116,7 +116,8 @@ def load():
         if not (LLM_DIR / "config.json").exists():
             raise FileNotFoundError(f"no model at {LLM_DIR}")
         torch.set_num_threads(max(1, os.cpu_count() or 1))
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        # CPU unless asked: on ZeroGPU Spaces, touching CUDA outside a @spaces.GPU call crashes.
+        dev = os.environ.get("LLM_DEVICE", "cpu")
         tok = AutoTokenizer.from_pretrained(str(LLM_DIR))
         model = AutoModelForCausalLM.from_pretrained(str(LLM_DIR), dtype=torch.float32 if dev == "cpu" else torch.float16)
         model.to(dev).eval()
