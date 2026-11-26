@@ -11,7 +11,7 @@
   header { padding:12px 16px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; background:var(--panel); border-bottom:1px solid var(--line); }
   header h1 { font-size:17px; margin:0 12px 0 0; }
   label { color:var(--muted); font-size:13px; display:flex; gap:6px; align-items:center; }
-  input[type=number] { width:64px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 6px; }
+  select, input[type=number] { width:64px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 6px; }
   button, .btn { background:var(--accent); color:#111; border:0; border-radius:8px; padding:7px 14px; font-weight:600; cursor:pointer; text-decoration:none; font-size:14px; }
   button:disabled, .btn.off { opacity:.4; pointer-events:none; }
   .ghost { background:transparent; color:var(--text); border:1px solid var(--line); }
@@ -32,7 +32,8 @@
   <h1>Song to Dance</h1>
   <input id="file" type="file" accept="audio/*">
   <label>Start (s) <input id="start" type="number" value="0" min="0" step="1"></label>
-  <label>Length (s) <input id="seconds" type="number" value="10" min="5" max="30" step="5"></label>
+  <label>Length (s) <input id="seconds" type="number" value="30" min="5" max="180" step="5"></label>
+  <label>Style <select id="genre"><option value="auto">Surprise me</option></select></label>
   <button id="go">Generate</button>
   <button id="play" class="ghost" disabled>Play</button>
   <a id="bvh" class="btn ghost off" href="#">BVH</a>
@@ -103,7 +104,9 @@ renderer.setAnimationLoop(() => {
 
 const status = (s) => ($("status").textContent = s);
 fetch("/api/health").then((r) => r.json()).then((h) => {
-  $("mode").textContent = h.mode === "edge" ? "Model: EDGE" : "Model: demo (no GPU)";
+  $("mode").textContent = { stitch: "Engine: AIST++ move stitching", edge: "Engine: EDGE", mock: "Engine: demo" }[h.mode];
+  $("seconds").max = h.max_seconds;
+  for (const [code, name] of Object.entries(h.genres || {})) $("genre").add(new Option(name, code));
 });
 
 $("play").onclick = () => (audio.paused ? audio.play() : audio.pause());
@@ -115,7 +118,7 @@ $("go").onclick = async () => {
   if (!file) return status("Pick a song first.");
   $("go").disabled = true; audio.pause();
   const fd = new FormData();
-  fd.append("file", file); fd.append("start", $("start").value); fd.append("seconds", $("seconds").value);
+  fd.append("file", file); fd.append("start", $("start").value); fd.append("seconds", $("seconds").value); fd.append("genre", $("genre").value);
   try {
     let job = await (await fetch("/api/generate", { method: "POST", body: fd })).json();
     while (job.status !== "done" && job.status !== "error") {
@@ -131,7 +134,8 @@ $("go").onclick = async () => {
     $("bvh").href = `${base}/motion.bvh`; $("json").href = `${base}/motion.json`;
     ["bvh", "json"].forEach((id) => $(id).classList.remove("off"));
     $("play").disabled = false;
-    status(`Ready: ${job.seconds}s dance. Press Play, or Generate again for a new take.`);
+    const extra = job.genre ? ` ${job.genre} at ${job.tempo} BPM, ${job.phrases.length} phrases.` : "";
+    status(`Ready: ${job.seconds}s dance.${extra} Generate again for a new take.`);
     audio.play().catch(() => {});
   } catch (e) {
     status("Failed: " + e.message);

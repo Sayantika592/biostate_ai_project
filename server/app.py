@@ -1,9 +1,12 @@
 """Song-to-dance API.
 
 Upload a song, get a generated SMPL dance back as viewer JSON or BVH.
-Runs pretrained EDGE (https://github.com/Stanford-TML/EDGE) when EDGE_DIR holds
-the repo and checkpoint.pt; otherwise falls back to a procedural mock so the
-web app can be developed without a GPU.
+
+Engines (MODE env var, picked automatically if unset):
+  stitch  beat-matched retrieval and stitching of real AIST++ moves (CPU, default
+          when LIBRARY points at a built library.npz)
+  edge    pretrained EDGE diffusion model (GPU, when EDGE_DIR has checkpoint.pt)
+  mock    procedural motion, for UI work only
 """
 from __future__ import annotations
 
@@ -27,8 +30,19 @@ import motion
 EDGE_DIR = Path(os.environ.get("EDGE_DIR", "/opt/EDGE"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/tmp/choreo-jobs"))
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
-MODE = os.environ.get("MODE") or ("edge" if (EDGE_DIR / "checkpoint.pt").exists() else "mock")
-MAX_SECONDS = 30
+LIBRARY = Path(os.environ.get("LIBRARY", Path(__file__).resolve().parent.parent / "data" / "library.npz"))
+MODE = os.environ.get("MODE") or (
+    "stitch" if LIBRARY.exists() else "edge" if (EDGE_DIR / "checkpoint.pt").exists() else "mock")
+MAX_SECONDS = 30 if MODE == "edge" else 180
+_choreo = None
+
+
+def choreographer():
+    global _choreo
+    if _choreo is None:
+        import choreographer as C
+        _choreo = C.Choreographer(C.Library.load(LIBRARY))
+    return _choreo
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Choreography API")
@@ -74,7 +88,7 @@ def _run_edge(job_dir: Path, clip: Path, seconds: int) -> dict:
         return pickle.load(f)
 
 
-def _work(job_id: str, src: Path, start: float, seconds: int):
+def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: int):
     job = jobs[job_id]
     job_dir = DATA_DIR / job_id
     try:
@@ -82,7 +96,10 @@ def _work(job_id: str, src: Path, start: float, seconds: int):
         job["status"] = "preparing audio"
         _ffmpeg_clip(src, clip, start, seconds)
         job["status"] = "generating dance"
-        if MODE == "edge":
+        if MODE == "stitch":
+            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed)
+            job.update(info)
+        elif MODE == "edge":
             sample = _run_edge(job_dir, clip, seconds)
         else:
             sample = motion.mock_sample(seconds, seed=int(uuid.UUID(job_id)) % 2**32)
@@ -98,13 +115,16 @@ def _work(job_id: str, src: Path, start: float, seconds: int):
 
 @app.get("/api/health")
 def health():
-    return {"mode": MODE, "max_seconds": MAX_SECONDS}
+    import choreographer as C
+    return {"mode": MODE, "max_seconds": MAX_SECONDS, "genres": C.GENRES if MODE == "stitch" else {}}
 
 
 @app.post("/api/generate")
-async def generate(file: UploadFile = File(...), start: float = Form(0.0), seconds: int = Form(10)):
+async def generate(file: UploadFile = File(...), start: float = Form(0.0), seconds: int = Form(30),
+                   genre: str = Form("auto"), seed: int | None = Form(None)):
     # EDGE's window maths needs a multiple of 5 s, at least 5 s.
     seconds = max(5, min(MAX_SECONDS, int(round(seconds / 5)) * 5))
+    seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
     job_id = str(uuid.uuid4())
     job_dir = DATA_DIR / job_id
     job_dir.mkdir(parents=True)
@@ -112,7 +132,7 @@ async def generate(file: UploadFile = File(...), start: float = Form(0.0), secon
     with open(src, "wb") as f:
         shutil.copyfileobj(file.file, f)
     jobs[job_id] = {"id": job_id, "status": "queued", "seconds": seconds, "start": max(0.0, start)}
-    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds), daemon=True).start()
+    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds, genre, seed), daemon=True).start()
     return jobs[job_id]
 
 
