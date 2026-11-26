@@ -1,3 +1,14 @@
+---
+title: Song to Dance
+emoji: 💃
+colorFrom: red
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Upload a song and get a 3D dance choreographed to it
+---
+
 # Song to Dance
 
 Upload a song and get a 3D dance choreographed to it. A skeleton dances in the browser in sync with the music, and you can download the motion as BVH (for Blender, Unity, Maya) or JSON. Everything runs on a laptop CPU, with no GPU and no training.
@@ -10,7 +21,11 @@ bash scripts/setup_data.sh                   # downloads AIST++ motions, builds 
 cd server && uvicorn app:app --port 8000     # open http://localhost:8000
 ```
 
-Or with Docker: `docker build -t song-to-dance . && docker run -p 8000:8000 song-to-dance`.
+Or with Docker: `docker build -t song-to-dance . && docker run -p 7860:7860 song-to-dance`, then open http://localhost:7860.
+
+## Deploy (Hugging Face Space)
+
+`.github/workflows/deploy-space.yml` pushes `main` to a free Docker Space. Add a `HF_TOKEN` secret (write token) and a `HF_SPACE` variable (e.g. `your-name/song-to-dance`) under the GitHub repo's Settings > Secrets and variables > Actions, then re-run the workflow.
 
 ## How it works (default engine: `stitch`)
 

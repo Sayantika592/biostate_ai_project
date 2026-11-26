@@ -8,5 +8,5 @@ COPY . .
 RUN bash scripts/setup_data.sh && rm -rf data/motions data/motions.zip
 ENV DATA_DIR=/tmp/jobs
 WORKDIR /app/server
-EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 7860
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
