@@ -19,6 +19,10 @@
   #stage { flex:1; position:relative; min-height:0; }
   canvas { display:block; }
   #mode { margin-left:auto; font-size:12px; color:var(--muted); }
+  #chat { padding:10px 16px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; border-bottom:1px solid var(--line); }
+  #ask { flex:1 1 320px; min-width:0; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:14px; }
+  #reply { color:var(--accent); font-size:14px; flex-basis:100%; }
+  #reply:empty { display:none; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -41,6 +45,11 @@
   <span id="status">Pick a song to start.</span>
   <span id="mode"></span>
 </header>
+<div id="chat">
+  <input id="ask" type="text" placeholder='Describe your dance, e.g. "energetic house, 45 seconds from 1:10"'>
+  <button id="askgo">Dance</button>
+  <span id="reply"></span>
+</div>
 <div id="stage"></div>
 <audio id="audio"></audio>
 
@@ -106,6 +115,7 @@ const status = (s) => ($("status").textContent = s);
 fetch("/api/health").then((r) => r.json()).then((h) => {
   $("mode").textContent = { stitch: "Engine: AIST++ move stitching", edge: "Engine: EDGE", mock: "Engine: demo" }[h.mode];
   $("seconds").max = h.max_seconds;
+  $("mode").textContent += h.assistant === "ready" ? " · Assistant: on-device LLM" : " · Assistant: quick mode";
   for (const [code, name] of Object.entries(h.genres || {})) $("genre").add(new Option(name, code));
 });
 
@@ -113,12 +123,34 @@ $("play").onclick = () => (audio.paused ? audio.play() : audio.pause());
 audio.onplay = () => ($("play").textContent = "Pause");
 audio.onpause = () => ($("play").textContent = "Play");
 
-$("go").onclick = async () => {
+let energy = "match";
+async function askAndDance() {
+  const text = $("ask").value.trim();
+  if (!text) return;
+  if (!$("file").files[0]) { $("reply").textContent = "Upload a song first, then tell me what you want."; return; }
+  $("askgo").disabled = true; $("reply").textContent = "Thinking…";
+  try {
+    const s = await (await fetch("/api/interpret", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) })).json();
+    $("genre").value = [...$("genre").options].some((o) => o.value === s.style) ? s.style : "auto";
+    $("seconds").value = s.seconds; $("start").value = s.start; energy = s.energy;
+    $("reply").textContent = s.reply + (s.parser === "llm" ? "" : " (quick mode)");
+    await generate();
+  } catch (e) {
+    $("reply").textContent = "Sorry, that failed: " + e.message;
+  } finally {
+    $("askgo").disabled = false; energy = "match";
+  }
+}
+$("askgo").onclick = askAndDance;
+$("ask").addEventListener("keydown", (e) => { if (e.key === "Enter") askAndDance(); });
+
+$("go").onclick = () => generate();
+async function generate() {
   const file = $("file").files[0];
   if (!file) return status("Pick a song first.");
   $("go").disabled = true; audio.pause();
   const fd = new FormData();
-  fd.append("file", file); fd.append("start", $("start").value); fd.append("seconds", $("seconds").value); fd.append("genre", $("genre").value);
+  fd.append("file", file); fd.append("start", $("start").value); fd.append("seconds", $("seconds").value); fd.append("genre", $("genre").value); fd.append("energy", energy);
   try {
     let job = await (await fetch("/api/generate", { method: "POST", body: fd })).json();
     while (job.status !== "done" && job.status !== "error") {

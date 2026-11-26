@@ -120,7 +120,8 @@ class Choreographer:
                 p["energy_pct"] = r / max(len(ps) - 1, 1)
         return out
 
-    def generate(self, audio: str | Path, seconds: float | None = None, genre: str = "auto", seed: int = 0):
+    def generate(self, audio: str | Path, seconds: float | None = None, genre: str = "auto", seed: int = 0,
+                 energy: str = "match"):
         rng = np.random.default_rng(seed)
         song = analyse_song(audio, seconds)
         dur = song["duration"]
@@ -134,6 +135,12 @@ class Choreographer:
         e_beat = np.interp(beats, song["beats"], song["energy"]) if len(song["beats"]) else np.zeros(len(beats))
         e_phr = np.array([e_beat[j * PHRASE:(j + 1) * PHRASE].mean() for j in range(n_phr)])
         e_pct = np.argsort(np.argsort(e_phr)) / max(n_phr - 1, 1)
+        # Energy preference shifts which moves count as a fit: calm favours the
+        # gentler half of the library, intense the bigger half.
+        if energy == "calm":
+            e_pct = 0.45 * e_pct
+        elif energy == "intense":
+            e_pct = 0.55 + 0.45 * e_pct
 
         chosen, recent = [], []
         for j in range(n_phr):
@@ -156,7 +163,7 @@ class Choreographer:
         rot, root = self._assemble(chosen, beats, dur)
         pos, _ = motion.forward_kinematics(rot, root, motion.REST_OFFSETS)
         sample = {"smpl_poses": rot.reshape(len(rot), 72), "smpl_trans": root, "full_pose": pos}
-        info = {"genre": GENRES[genre], "tempo": round(song["tempo"], 1),
+        info = {"genre": GENRES[genre], "tempo": round(song["tempo"], 1), "energy": energy,
                 "phrases": [str(self.lib.names[p["clip"]]) for p in chosen]}
         return sample, info
 

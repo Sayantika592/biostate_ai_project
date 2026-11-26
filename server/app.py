@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 import motion
 
@@ -88,7 +89,7 @@ def _run_edge(job_dir: Path, clip: Path, seconds: int) -> dict:
         return pickle.load(f)
 
 
-def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: int):
+def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: int, energy: str):
     job = jobs[job_id]
     job_dir = DATA_DIR / job_id
     try:
@@ -97,7 +98,7 @@ def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: 
         _ffmpeg_clip(src, clip, start, seconds)
         job["status"] = "generating dance"
         if MODE == "stitch":
-            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed)
+            sample, info = choreographer().generate(clip, seconds, genre=genre, seed=seed, energy=energy)
             job.update(info)
         elif MODE == "edge":
             sample = _run_edge(job_dir, clip, seconds)
@@ -116,12 +117,14 @@ def _work(job_id: str, src: Path, start: float, seconds: int, genre: str, seed: 
 @app.get("/api/health")
 def health():
     import choreographer as C
-    return {"mode": MODE, "max_seconds": MAX_SECONDS, "genres": C.GENRES if MODE == "stitch" else {}}
+    import intent
+    return {"mode": MODE, "max_seconds": MAX_SECONDS, "genres": C.GENRES if MODE == "stitch" else {},
+            "assistant": intent.llm_status()}
 
 
 @app.post("/api/generate")
 async def generate(file: UploadFile = File(...), start: float = Form(0.0), seconds: int = Form(30),
-                   genre: str = Form("auto"), seed: int | None = Form(None)):
+                   genre: str = Form("auto"), seed: int | None = Form(None), energy: str = Form("match")):
     # EDGE's window maths needs a multiple of 5 s, at least 5 s.
     seconds = max(5, min(MAX_SECONDS, int(round(seconds / 5)) * 5))
     seed = seed if seed is not None else int.from_bytes(os.urandom(4), "little")
@@ -132,8 +135,19 @@ async def generate(file: UploadFile = File(...), start: float = Form(0.0), secon
     with open(src, "wb") as f:
         shutil.copyfileobj(file.file, f)
     jobs[job_id] = {"id": job_id, "status": "queued", "seconds": seconds, "start": max(0.0, start)}
-    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds, genre, seed), daemon=True).start()
+    threading.Thread(target=_work, args=(job_id, src, max(0.0, start), seconds, genre, seed, energy if energy in ("calm", "match", "intense") else "match"), daemon=True).start()
     return jobs[job_id]
+
+
+class Prompt(BaseModel):
+    text: str
+
+
+@app.post("/api/interpret")
+def interpret(p: Prompt):
+    """Chat box: turn a typed request into dance settings with the on-device LLM."""
+    import intent
+    return intent.interpret(p.text)
 
 
 @app.get("/api/jobs/{job_id}")
