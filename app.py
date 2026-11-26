@@ -93,7 +93,11 @@ if __name__ == "__main__":
     # proxy would answer /ui/ with the Gradio page itself (an endless iframe loop).
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)),
                 prevent_thread_lock=True, ssr_mode=False)
-    from starlette.routing import Mount
-    demo.app.router.routes.insert(0, Mount("/ui", app=load_server_app()))  # ahead of Gradio's routes
+    from starlette.responses import RedirectResponse
+    from starlette.routing import Mount, Route
+    # Ahead of Gradio's routes: the app lives at /ui, and the Space's front page
+    # goes straight to it (the Gradio page only exists so ZeroGPU will start).
+    demo.app.router.routes.insert(0, Mount("/ui", app=load_server_app()))
+    demo.app.router.routes.insert(0, Route("/", lambda request: RedirectResponse("/ui/", status_code=307)))
     print("Song to Dance ready at /ui/", flush=True)
     demo.block_thread()
