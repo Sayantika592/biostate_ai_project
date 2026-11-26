@@ -448,7 +448,7 @@ function renderPlan(plan, changed) {
   if (!plan || !plan.sections) return;
   $("ptitle").textContent = plan.title || "Your dance";
   $("pby").textContent = plan.parser === "llm"
-    ? `Written by the AI choreographer (Qwen2.5 LLM, on this server) in ${plan.seconds_taken}s`
+    ? `Written by the AI choreographer (Qwen2.5 LLM${plan.device === "gpu" ? " on the Space's GPU" : ", on this server"}) in ${plan.seconds_taken}s`
     : (assistReady ? "Plan from the music's energy. Type a vibe or story below and the AI choreographer (LLM) will rewrite it."
                    : "Plan from the music's energy (AI choreographer LLM still loading, rule-based for now)");
   planEls = {};
@@ -525,8 +525,8 @@ $("file").onchange = () => { if ($("file").files[0]) setFile($("file").files[0])
 fetch("api/health").then((r) => r.json()).then((h) => {
   $("mode").textContent = { stitch: "Engine: AIST++ move stitching", edge: "Engine: EDGE diffusion", mock: "Engine: demo" }[h.mode] || h.mode;
   $("assist").hidden = false;
-  $("assist").textContent = h.assistant === "ready" ? "AI choreographer: Qwen2.5 LLM ✓" : h.assistant === "loading" ? "AI choreographer: warming up…" : "AI choreographer: rules fallback";
-  $("assist").title = h.assistant; assistReady = h.assistant === "ready";
+  $("assist").textContent = h.assistant.startsWith("ready") ? `AI choreographer: Qwen2.5 LLM ✓${h.assistant.includes("GPU") ? " (GPU)" : ""}` : h.assistant === "loading" ? "AI choreographer: warming up…" : "AI choreographer: rules fallback";
+  $("assist").title = h.assistant; assistReady = h.assistant.startsWith("ready");
   $("seconds").max = h.max_seconds;
   for (const [code, name] of Object.entries(h.genres || {})) { $("genre").add(new Option(name, code)); GENRE_NAMES[code] = name; }
 }).catch(() => ($("mode").textContent = "Server unreachable"));

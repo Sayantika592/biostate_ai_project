@@ -170,7 +170,7 @@ def health():
     import choreographer as C
     import choreo_llm
     return {"mode": MODE, "max_seconds": MAX_SECONDS, "genres": C.GENRES if MODE == "stitch" else {},
-            "assistant": choreo_llm.status(), "llm": choreo_llm.LLM_REPO}
+            "assistant": choreo_llm.status(), "llm": choreo_llm.LLM_REPO, "llm_error": choreo_llm.last_error()}
 
 
 @app.post("/api/generate")

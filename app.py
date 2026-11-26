@@ -30,9 +30,35 @@ try:
         import torch
         return torch.cuda.is_available()
 
-    print("ZeroGPU: registered @spaces.GPU function", flush=True)
+    @spaces.GPU(duration=40)
+    def gpu_plan(sections, text, style_hint, previous):
+        """The AI choreographer's LLM on the Space's free ZeroGPU (CPU there is too slow)."""
+        import choreo_llm
+        return choreo_llm._plan_local(sections, text, style_hint, previous)
+
+    ZERO_GPU = bool(os.environ.get("SPACES_ZERO_GPU"))
+    print(f"ZeroGPU: registered @spaces.GPU functions (zero_gpu={ZERO_GPU})", flush=True)
 except Exception as e:  # not on ZeroGPU (local runs, Docker)
     print(f"spaces not available ({e}); running without ZeroGPU", flush=True)
+    ZERO_GPU = False
+
+
+def setup_gpu_llm() -> bool:
+    """On ZeroGPU, load the LLM onto 'cuda' now, in the main process before launch
+    (that is when ZeroGPU accepts it), and route plans through gpu_plan."""
+    try:
+        import choreo_llm
+        choreo_llm.download()
+        choreo_llm.load(device="cuda")
+        if choreo_llm.model_ready():
+            choreo_llm.use_remote(gpu_plan)
+            print("AI choreographer LLM on ZeroGPU", flush=True)
+            return True
+        print(f"GPU load failed: {choreo_llm.last_error()}", flush=True)
+        choreo_llm._state["error"] = None
+    except Exception as e:
+        print(f"GPU LLM setup failed: {e}", flush=True)
+    return False
 
 
 def build_library():
@@ -75,7 +101,8 @@ def load_server_app():
 
 if __name__ == "__main__":
     build_library()
-    threading.Thread(target=fetch_llm, daemon=True).start()
+    if not (ZERO_GPU and setup_gpu_llm()):
+        threading.Thread(target=fetch_llm, daemon=True).start()
     import gradio as gr
 
     # ZeroGPU only starts a Space that launches through Gradio, so Gradio hosts the

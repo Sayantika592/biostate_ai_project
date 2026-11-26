@@ -86,13 +86,17 @@ _state: dict = {"model": None, "tok": None, "error": None, "loading": False, "de
 
 # ---------------------------------------------------------------- model
 
+def last_error() -> str | None:
+    return _state["error"]
+
+
 def model_ready() -> bool:
     return _state["model"] is not None
 
 
 def status() -> str:
     if _state["model"] is not None:
-        return "ready"
+        return "ready (GPU)" if _remote is not None else "ready"
     if _state["loading"]:
         return "loading"
     return f"unavailable ({_state['error'] or 'not downloaded yet'})"
@@ -106,7 +110,15 @@ def download():
     snapshot_download(LLM_REPO, local_dir=str(LLM_DIR), allow_patterns=["*.json", "*.safetensors", "*.txt"])
 
 
-def load():
+_remote = None  # a function that runs _plan_local on a GPU worker (ZeroGPU), set by the Space
+
+
+def use_remote(fn):
+    global _remote
+    _remote = fn
+
+
+def load(device: str | None = None):
     if _state["model"] is not None or _state["loading"]:
         return _state["model"]
     _state["loading"] = True
@@ -117,7 +129,7 @@ def load():
             raise FileNotFoundError(f"no model at {LLM_DIR}")
         torch.set_num_threads(max(1, os.cpu_count() or 1))
         # CPU unless asked: on ZeroGPU Spaces, touching CUDA outside a @spaces.GPU call crashes.
-        dev = os.environ.get("LLM_DEVICE", "cpu")
+        dev = device or os.environ.get("LLM_DEVICE", "cpu")
         tok = AutoTokenizer.from_pretrained(str(LLM_DIR))
         model = AutoModelForCausalLM.from_pretrained(str(LLM_DIR), dtype=torch.float32 if dev == "cpu" else torch.float16)
         model.to(dev).eval()
@@ -350,6 +362,21 @@ def _biases(text: str, allowed: list[str]) -> tuple[dict, dict]:
 
 
 def plan(sections: list[dict], text: str, style_hint: str = "auto", previous: dict | None = None) -> dict:
+    """Plan on the GPU worker when the Space has one, else here; rules if both fail."""
+    if _remote is not None and sections and _state["model"] is not None:
+        try:
+            t0 = time.time()
+            out = _remote(sections, text, style_hint, previous)
+            out["seconds_taken"] = round(time.time() - t0, 1)
+            out["device"] = "gpu"
+            return out
+        except Exception as e:
+            _state["error"] = f"GPU call failed: {type(e).__name__}: {e}"[:300]
+            return rules_plan(sections, text, style_hint, previous)
+    return _plan_local(sections, text, style_hint, previous)
+
+
+def _plan_local(sections: list[dict], text: str, style_hint: str = "auto", previous: dict | None = None) -> dict:
     """Return {"title", "sections": [{..., style, energy, move, why}], "reply", "parser", "seconds_taken"}."""
     t_start = time.time()
     if not sections:
