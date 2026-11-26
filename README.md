@@ -11,6 +11,8 @@ short_description: Upload a song and get a 3D dance choreographed to it
 
 # Song to Dance
 
+![A generated Break dance](docs/demo.gif)
+
 Upload a song and get a 3D dance choreographed to it. A skeleton dances in the browser in sync with the music, and you can download the motion as BVH (for Blender, Unity, Maya) or JSON. Everything runs on a laptop CPU, with no GPU and no training.
 
 ## Quick start
